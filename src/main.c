@@ -59,18 +59,12 @@ __always_inline struct tpin_chunk *chunk_at_offset(struct tpin_chunk *c, size_t 
 	return (struct tpin_chunk *) ((uint8_t *)c + offset);
 }
 
-__always_inline void set_chunk_in_use(struct tpin_chunk *c)
-{
-	struct tpin_chunk *target = chunk_at_offset(c, c->size);
-	target->size = target->size | PREV_IN_USE;
-}
-
 __always_inline void *chunk_to_mem(struct tpin_chunk *c)
 {
 	return (void *) ((uint8_t *)c + SIZE_SZ*2);
 }
 
-__always_inline struct tpin_chunk *user_to_chunk(void *mem)
+__always_inline struct tpin_chunk *mem_to_chunk(void *mem)
 {
 	return (struct tpin_chunk *) ((uint8_t *)mem - SIZE_SZ*2);
 }
@@ -78,6 +72,26 @@ __always_inline struct tpin_chunk *user_to_chunk(void *mem)
 __always_inline size_t get_chunk_size(struct tpin_chunk *c)
 {
 	return (c->size & ~0x15);
+}
+
+__always_inline void set_prev_in_use(struct tpin_chunk *c)
+{
+	c->size |= PREV_IN_USE;
+}
+
+__always_inline void set_prev_free(struct tpin_chunk *c)
+{
+	c->size &= ~PREV_IN_USE;
+}
+
+__always_inline size_t get_prev_in_use(struct tpin_chunk *c)
+{
+	return c->size & PREV_IN_USE;
+}
+
+__always_inline size_t is_chunk_in_use(struct tpin_chunk *c)
+{
+	return get_prev_in_use(chunk_at_offset(c, get_chunk_size(c)));
 }
 
 uintptr_t current_brk = 0;
@@ -136,9 +150,31 @@ struct tpin_chunk *chunk_from_top(size_t sz)
 	return new;
 }
 
+struct tpin_chunk *find_free_chunk(size_t sz)
+{
+	struct tpin_chunk *current = heap->free;
+	
+	while (current) {
+		if (current->size >= sz) break;
+		current = current->next;
+		if (current == heap->free) break;
+	}
+	if (current->size < sz) return NULL;
+
+	if (current->next == current) {
+		heap->free = NULL;
+		return current;
+	}
+	current->prev->next = current->next;
+	current->next->prev = current->prev;
+
+	return current;
+}
+
 void *tpin_malloc(size_t req)
 {
 	size_t sz = request_to_size(req);
+	struct tpin_chunk *chunk; // valid chunk for request
 
 	assert(sz < MAX_CAPACITY && sz + heap->size < MAX_CAPACITY);
 	if (sz > MAX_CAPACITY || sz + heap->size > MAX_CAPACITY) return NULL;
@@ -155,29 +191,64 @@ void *tpin_malloc(size_t req)
 
 	//check for a suitable free chunk
 	if (heap->free) {
-		return NULL;
+		chunk = find_free_chunk(sz);
 	}
 
-	printf("No suitable free chunk found, attempting to split top...\n");
+	if (!chunk) {
+		printf("No suitable free chunk found, attempting to split top...\n");
 
-	if (sz + MIN_CHUNK_SZ > heap->top->size) {
-		// TODO: IMPLEMENT EXPAND HEAP
-		printf("Top size not enough for split");
-		return NULL;
+		if (sz + MIN_CHUNK_SZ > heap->top->size) {
+			// TODO: IMPLEMENT EXPAND HEAP
+			printf("Top size not enough for split");
+			return NULL;
+		}
+		// do top split
+		chunk = chunk_from_top(sz);
+		printf("New top address: %p\n", heap->top);
 	}
 
-	// do top split
-	struct tpin_chunk *chunk = chunk_from_top(sz);
-	if (!chunk) return NULL;
+	assert(chunk);
 	
 	printf("Returned chunk address: %p\n", chunk);
-	printf("New top address: %p\n", heap->top);
 
-	set_chunk_in_use(chunk);
+	set_prev_in_use(chunk_at_offset(chunk, get_chunk_size(chunk)));
 
 	printf("---------------------------\n");
 
 	return chunk_to_mem(chunk);
+}
+
+void tpin_free(void *mem)
+{
+	struct tpin_chunk *chunk = mem_to_chunk(mem);
+	struct tpin_chunk *old_free_head = heap->free;
+	struct tpin_chunk *next_in_mem;
+	size_t size = get_chunk_size(chunk);
+	
+	//clear prev_in_use of next chunk in memory
+	next_in_mem = chunk_at_offset(chunk, size);
+	set_prev_free(next_in_mem);
+	next_in_mem->prev_size = size;
+
+	//insert chunk into free linked list
+	if (!old_free_head) {
+		chunk->next = chunk;
+		chunk->prev = chunk;
+	} else {
+		chunk->next = old_free_head;
+		chunk->prev = old_free_head->prev;
+		old_free_head->prev->next = chunk;
+		old_free_head->prev = chunk;
+	}
+
+	heap->free = chunk;
+}
+
+void print_pointer_value(int *xs, size_t sz)
+{
+	for (int *ptr = xs; ptr < xs + sz; ptr++) {
+		printf("Value: %d \t Address: %p\n", *ptr, (void *)ptr);
+	}
 }
 
 int main()
@@ -192,12 +263,24 @@ int main()
 		xs[i] = i;
 		ys[i] = i*2;
 	}
-	for (int *ptr = xs; ptr < xs + 10; ptr++) {
-		printf("Value: %d \t Address: %p\n", *ptr, (void *)ptr);
-	}
+	print_pointer_value(xs, 10);
 	printf("-----------\n");
-	for (int *ptr = ys; ptr < ys + 10; ptr++) {
-		printf("Value: %d \t Address: %p\n", *ptr, (void *)ptr);
+	print_pointer_value(ys, 10);
+	printf("-----------\n");
+
+	printf("freeing second allocated chunk...\n");
+	tpin_free(ys);
+	printf("attempting to allocate a new chunk...\n");
+	int *zs = (int *) tpin_malloc(sizeof(int) * 10);
+	if (!zs) {
+		printf("Memory not Allocated\n");
+		return 0;
 	}
+	for (int i = 0; i < 10; i++) {
+		zs[i] = i*3;
+	}
+	print_pointer_value(zs, 10);
+
+	
 	return 0;
 }
