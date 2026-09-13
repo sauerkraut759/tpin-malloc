@@ -71,7 +71,7 @@ __always_inline struct tpin_chunk *mem_to_chunk(void *mem)
 
 __always_inline size_t get_chunk_size(struct tpin_chunk *c)
 {
-	return (c->size & ~0x15);
+	return (c->size & ~(ALIGNMENT - 1));
 }
 
 __always_inline void set_prev_in_use(struct tpin_chunk *c)
