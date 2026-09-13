@@ -136,19 +136,19 @@ struct tpin_chunk *chunk_from_top(size_t sz)
 	return new;
 }
 
-void *tpin_malloc(size_t sz)
+void *tpin_malloc(size_t req)
 {
-	size_t req = request_to_size(sz);
+	size_t sz = request_to_size(req);
 
-	assert(req < MAX_CAPACITY && req + heap->size < MAX_CAPACITY);
-	if (req > MAX_CAPACITY || req + heap->size > MAX_CAPACITY) return NULL;
+	assert(sz < MAX_CAPACITY && sz + heap->size < MAX_CAPACITY);
+	if (sz > MAX_CAPACITY || sz + heap->size > MAX_CAPACITY) return NULL;
 
 	if (heap->size == 0) {
 		malloc_init();
 	}
 
 	printf("Requested bytes: %zu\n", sz);
-	printf("Returned chunk size: %zu\n", req);
+	printf("Returned chunk size: %zu\n", sz);
 	printf("Top address: %p\n", heap->top);
 
 	printf("Looking for suitable free chunk...\n");
@@ -158,10 +158,16 @@ void *tpin_malloc(size_t sz)
 		return NULL;
 	}
 
-	printf("No suitable free chunk found, splitting top...\n");
+	printf("No suitable free chunk found, attempting to split top...\n");
 
-	// split top chunk
-	struct tpin_chunk *chunk = chunk_from_top(req);
+	if (sz + MIN_CHUNK_SZ > heap->top->size) {
+		// TODO: IMPLEMENT EXPAND HEAP
+		printf("Top size not enough for split");
+		return NULL;
+	}
+
+	// do top split
+	struct tpin_chunk *chunk = chunk_from_top(sz);
 	if (!chunk) return NULL;
 	
 	printf("Returned chunk address: %p\n", chunk);
