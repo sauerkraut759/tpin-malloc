@@ -126,6 +126,8 @@ int malloc_init()
 
 	heap->top  = top;
 	heap->free = NULL;
+
+	return 0;
 }
 
 struct tpin_chunk *chunk_from_top(size_t sz)
@@ -152,18 +154,18 @@ struct tpin_chunk *chunk_from_top(size_t sz)
 
 struct tpin_chunk *find_free_chunk(size_t sz)
 {
+	// TODO: COALESCING
 	struct tpin_chunk *current = heap->free;
 	
 	while (current) {
-		if (current->size >= sz) break;
+		if (get_chunk_size(current->size) >= sz) break;
 		current = current->next;
 		if (current == heap->free) break;
 	}
 	if (current->size < sz) return NULL;
 
-	if (current->next == current) {
-		heap->free = NULL;
-		return current;
+	if (current == heap->free) {
+		heap->free = (current->next == current) ? NULL : current->next;
 	}
 	current->prev->next = current->next;
 	current->next->prev = current->prev;
@@ -174,13 +176,14 @@ struct tpin_chunk *find_free_chunk(size_t sz)
 void *tpin_malloc(size_t req)
 {
 	size_t sz = request_to_size(req);
-	struct tpin_chunk *chunk; // valid chunk for request
+	struct tpin_chunk *chunk = NULL; // valid chunk for request
 
 	assert(sz < MAX_CAPACITY && sz + heap->size < MAX_CAPACITY);
 	if (sz > MAX_CAPACITY || sz + heap->size > MAX_CAPACITY) return NULL;
 
 	if (heap->size == 0) {
-		malloc_init();
+		int error = malloc_init();
+		if (error) return NULL;
 	}
 
 	printf("Requested bytes: %zu\n", sz);
