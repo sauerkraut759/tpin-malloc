@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #ifndef __always_inline
 #define __always_inline inline __attribute__((always_inline))
@@ -109,6 +110,9 @@ __always_inline size_t request_to_size(size_t bs)
 	return max_unsigned(MIN_CHUNK_SZ, align(bs + SIZE_SZ));
 }
 
+void free_chunk_remove(struct tpin_chunk *);
+void free_chunk_insert(struct tpin_chunk *);
+
 int malloc_init()
 {
 	void *old_brk = sbrk(MIN_CAPACITY);
@@ -154,21 +158,16 @@ struct tpin_chunk *chunk_from_top(size_t sz)
 
 struct tpin_chunk *find_free_chunk(size_t sz)
 {
-	// TODO: COALESCING
 	struct tpin_chunk *current = heap->free;
 	
 	while (current) {
-		if (get_chunk_size(current->size) >= sz) break;
+		if (get_chunk_size(current) >= sz) break;
 		current = current->next;
 		if (current == heap->free) break;
 	}
 	if (current->size < sz) return NULL;
 
-	if (current == heap->free) {
-		heap->free = (current->next == current) ? NULL : current->next;
-	}
-	current->prev->next = current->next;
-	current->next->prev = current->prev;
+	free_chunk_remove(current);
 
 	return current;
 }
@@ -221,30 +220,65 @@ void *tpin_malloc(size_t req)
 	return chunk_to_mem(chunk);
 }
 
+void free_chunk_remove(struct tpin_chunk *chunk)
+{
+	if (chunk == heap->free) {
+		heap->free = (chunk == chunk->next) ? NULL : chunk->next;
+	}
+	chunk->prev->next = chunk->next;
+	chunk->next->prev = chunk->prev;
+}
+
+void free_chunk_insert(struct tpin_chunk *chunk)
+{
+	chunk->next = (heap->free) ? heap->free->next : chunk;
+	chunk->prev = (heap->free) ? heap->free->prev : chunk;
+	if (heap->free) {
+		heap->free->next->prev = chunk;
+		heap->free->prev->next = chunk;
+	}
+	heap->free = chunk;
+}
+
 void tpin_free(void *mem)
 {
 	struct tpin_chunk *chunk = mem_to_chunk(mem);
 	struct tpin_chunk *old_free_head = heap->free;
-	struct tpin_chunk *next_in_mem;
-	size_t size = get_chunk_size(chunk);
-	
-	//clear prev_in_use of next chunk in memory
-	next_in_mem = chunk_at_offset(chunk, size);
-	set_prev_free(next_in_mem);
-	next_in_mem->prev_size = size;
+	struct tpin_chunk *next;
+	struct tpin_chunk *prev;
+	struct tpin_chunk *next_after; //next chunk after coalescing
 
-	//insert chunk into free linked list
-	if (!old_free_head) {
-		chunk->next = chunk;
-		chunk->prev = chunk;
-	} else {
-		chunk->next = old_free_head;
-		chunk->prev = old_free_head->prev;
-		old_free_head->prev->next = chunk;
-		old_free_head->prev = chunk;
+	size_t flags = chunk->size & PREV_IN_USE;
+	size_t size = get_chunk_size(chunk);
+
+	bool coalesced_back = false;
+	
+	next = chunk_at_offset(chunk, size);
+
+	/* forward coalescing */
+	if (!is_chunk_in_use(next) && next != heap->top) {
+		size += get_chunk_size(next);
+		free_chunk_remove(next);
+	}
+	
+	/* backwards coalescing */
+	if (!get_prev_in_use(chunk)) {
+		prev = (struct tpin_chunk *) ((uint8_t *)chunk - chunk->prev_size);
+		size += get_chunk_size(prev);
+
+		chunk = prev;
+		coalesced_back = true;
 	}
 
-	heap->free = chunk;
+	chunk->size = size | flags;
+
+	/* update next chunk flags after coalescing */
+	next_after = chunk_at_offset(chunk, size);
+	set_prev_free(next_after);
+	next_after->prev_size = size;
+
+	/* Previous chunk was already on the list */
+	if (!coalesced_back) free_chunk_insert(chunk);
 }
 
 void print_pointer_value(int *xs, size_t sz)
